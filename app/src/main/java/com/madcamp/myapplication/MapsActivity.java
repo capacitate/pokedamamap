@@ -3,12 +3,15 @@ package com.madcamp.myapplication;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.graphics.BitmapFactory;
 import android.graphics.Camera;
 import android.location.Location;
+import android.media.MediaPlayer;
 import android.os.AsyncTask;
 import android.os.Handler;
 import android.os.Message;
+import android.provider.Settings;
 import android.provider.Telephony;
 import android.support.v4.app.FragmentActivity;
 import android.os.Bundle;
@@ -74,6 +77,13 @@ public class MapsActivity extends FragmentActivity {
     private AlertDialog mDialog;
 
     private final double DISTANCE = 100;
+    private String uuid = null;
+
+    private final String BATTLE = "BATTLE";
+    private final String DAMA = "DAMA";
+
+    private MediaPlayer mp;
+    private Marker[] marker_arr;
 
     //get "new message" from server and make LatLng for wild pocketmon
     private Emitter.Listener onMsg = new Emitter.Listener(){
@@ -91,6 +101,7 @@ public class MapsActivity extends FragmentActivity {
             }
 
             wild_loc = new LatLng[wild_num];
+            marker_arr = new Marker[wild_num];
 
             for(int i = 0; i < wild_num; i++){
                 try {
@@ -101,6 +112,15 @@ public class MapsActivity extends FragmentActivity {
                 }
             }
             mHandler.sendEmptyMessage(DRAW_MARKER);
+        }
+    };
+
+    private Emitter.Listener onRes = new Emitter.Listener(){
+        @Override
+        public void call(Object... args) {
+            JSONObject data = (JSONObject) args[0];
+
+            Log.i(TAG, "Response called in android activity " + data.toString());
         }
     };
 
@@ -144,6 +164,7 @@ public class MapsActivity extends FragmentActivity {
                 public void onClick(DialogInterface dialog, int which) {
                     //might be send something to the server
                     Log.i(TAG, "click FIGHT");
+                    SendScene(BATTLE);
                     mDialog.dismiss();
                 }
             });
@@ -152,6 +173,7 @@ public class MapsActivity extends FragmentActivity {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
                     Log.i(TAG, "click RUN");
+                    SendScene(DAMA);
                     mDialog.dismiss();
                 }
             });
@@ -167,13 +189,38 @@ public class MapsActivity extends FragmentActivity {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
                     //might be send something to the server
-                    Log.i(TAG, "click FIGHT");
+                    Log.i(TAG, "click FAR");
+                    SendScene(DAMA);
                     mDialog.dismiss();
                 }
             });
 
             return ab.create();
         }
+    }
+
+    public void SendScene(String scene){
+        JSONObject msg = new JSONObject();
+        JSONObject uuid_scene = new JSONObject();
+        try {
+            msg.put("RequestType", "SaveScene");
+
+            uuid_scene.put("IMEI", uuid);
+            uuid_scene.put("scene", scene);
+
+            msg.put("SaveScene", uuid_scene);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+        mSocket.connect();
+        if(mSocket.connected()){
+            Log.w(TAG, "socket is connected");
+        }
+
+        Log.w(TAG, "msocket send");
+
+        mSocket.emit("Request", msg);
     }
 
     private GoogleMap.OnMarkerClickListener clickDialog(){
@@ -209,6 +256,16 @@ public class MapsActivity extends FragmentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_maps);
+
+        if(null != getIntent()) {
+            try {
+                uuid = getIntent().getExtras().getString("UUID");
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+            Log.i(TAG, "Unity uuid " + uuid);
+        }
+
         setUpMapIfNeeded();
 
         mContext = getApplicationContext();
@@ -237,12 +294,21 @@ public class MapsActivity extends FragmentActivity {
 
         //set marker click event
         mMap.setOnMarkerClickListener(clickDialog());
+
+        mSocket.on("Response", onRes);
+        String android_id = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+        Log.i(TAG, "UUID " + android_id);
+
+        mp = MediaPlayer.create(this, R.raw.poke_bgm);
+        mp.start();
     }
 
     @Override
     protected void onDestroy(){
         super.onDestroy();
+        mp.stop();
         mSocket.off("new message", onMsg);
+        mSocket.off("Response", onRes);
     }
 
     @Override
@@ -270,12 +336,13 @@ public class MapsActivity extends FragmentActivity {
         // Do a null check to confirm that we have not already instantiated the map.
         if (mMap == null) {
             // Try to obtain the map from the SupportMapFragment.
-            mMap = ((SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map))
-                    .getMap();
+            mMap = ((SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map)).getMap();
             // Check if we were successful in obtaining the map.
             if (mMap != null) {
                 setUpMap();
+                Log.i(TAG, "mMap is not null");
             }
+            Log.i(TAG, "mMap is null");
         }
     }
 
@@ -294,7 +361,7 @@ public class MapsActivity extends FragmentActivity {
         protected void onPreExecute(){
             JSONObject msg = new JSONObject();
             try {
-                msg.put("IMEI", tm.getDeviceId());
+                msg.put("IMEI", "2192c5dcca402ee11d41110283282f29");
                 msg.put("latitude", current.latitude);
                 msg.put("longitude", current.longitude);
             } catch (JSONException e) {
@@ -306,11 +373,8 @@ public class MapsActivity extends FragmentActivity {
                 Log.w(TAG, "socket is connected");
             }
 
-            Log.w(TAG, "msocket start");
             mSocket.on("new message", onMsg);
-            Log.w(TAG, "msocket start 받은 거니?");
             mSocket.emit("MapActivity", msg);
-            Log.w(TAG, "msocket start 보내고 있는 거니?");
         }
 
         @Override
@@ -333,20 +397,30 @@ public class MapsActivity extends FragmentActivity {
                 case DRAW_MARKER:
                     if(null == wild_loc){
                         Log.i(TAG, "wild_loc array is null");
-                    }
+                    }else {
+                        for (int i = 0; i < wild_num; i++) {
+                            Location temp_loc = new Location("wild");
+                            if (wild_loc[i] == null) {
+                                Log.i(TAG, "wild_loc is null");
+                            }else if(temp_loc == null){
 
-                    for(int i = 0; i < wild_num; i++){
-                        Location temp_loc = new Location("wild");
-                        temp_loc.setLatitude(wild_loc[i].latitude);
-                        temp_loc.setLongitude(wild_loc[i].longitude);
+                            }else{
+                                temp_loc.setLatitude(wild_loc[i].latitude);
+                                temp_loc.setLongitude(wild_loc[i].longitude);
 
-                        Log.i(TAG, "insdide of for onPostExecute distance[" + i + " : " + current_loc.distanceTo(temp_loc));
-                        if (current_loc.distanceTo(temp_loc) < DISTANCE){
-                            mMap.addMarker(new MarkerOptions().position(wild_loc[i]).title("gonna fight? wild")
-                                    .icon(BitmapDescriptorFactory.fromResource(R.drawable.karate)));
-                        }else{
-                            mMap.addMarker(new MarkerOptions().position(wild_loc[i]).title("sleeping wild")
-                                    .icon(BitmapDescriptorFactory.fromResource(R.drawable.sleep)));
+                                if(wild_loc[i] == null){
+
+                                }else{
+                                    //Log.i(TAG, "insdide of for onPostExecute distance[" + i + " : " + current_loc.distanceTo(temp_loc));
+                                    if (current_loc.distanceTo(temp_loc) < DISTANCE) {
+                                        mMap.addMarker(new MarkerOptions().position(wild_loc[i]).title("gonna fight? wild")
+                                                .icon(BitmapDescriptorFactory.fromResource(R.drawable.karate)));
+                                    } else {
+                                        mMap.addMarker(new MarkerOptions().position(wild_loc[i]).title("sleeping wild")
+                                                .icon(BitmapDescriptorFactory.fromResource(R.drawable.sleep)));
+                                    }
+                                }
+                            }
                         }
                     }
                     break;
